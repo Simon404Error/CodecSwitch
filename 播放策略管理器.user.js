@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         播放策略管理器 (Codec Switch)
 // @namespace    https://github.com/Simon404Error/CodecSwitch
-// @version      2.0.0
+// @version      2.0.1
 // @description  拦截 canPlayType / MediaSource.isTypeSupported / mediaCapabilities，按开关勾选放行视频编码，未勾选的编码对网站隐藏（便于稳定触发 RTX VSR）
 // @author       Simon404Error
 // @match        *://*/*
@@ -47,12 +47,9 @@
     // 全禁会导致站点无流可选、视频无法播放，强制至少保留一种
     const safe = ALL_IDS.filter(id => list.includes(id));
     const value = safe.length ? safe : ['avc'];
-    try {
-      if (hasGM) GM_setValue(STORE_KEY, JSON.stringify(value));
-      else localStorage.setItem(STORE_KEY, JSON.stringify(value));
-    } catch (e) {}
+    if (hasGM) GM_setValue(STORE_KEY, JSON.stringify(value));
+    else localStorage.setItem(STORE_KEY, JSON.stringify(value));
     allowed = value;
-    return value;
   }
 
   // 判断某个 MIME 类型是否应当被拒绝。
@@ -149,10 +146,11 @@
 
     const hint = document.createElement('div');
     hint.style.cssText = 'color:#9aa0a8;font-size:12px;margin-bottom:12px';
-    const HINT_TEXT = '勾选的编码允许播放，未勾选的会对网站隐藏。修改后刷新页面生效。';
+    const HINT_TEXT = '勾选的编码允许播放，未勾选的会对网站隐藏。';
     hint.textContent = HINT_TEXT;
 
     const list = document.createElement('div');
+    const boxes = new Map();
     for (const codec of CODECS) {
       const row = document.createElement('label');
       row.style.cssText = 'display:flex;align-items:center;gap:9px;padding:8px 6px;border-radius:6px;cursor:pointer';
@@ -168,9 +166,7 @@
       name.textContent = codec.label;
 
       box.addEventListener('change', () => {
-        const next = new Set(allowed);
-        if (box.checked) next.add(codec.id); else next.delete(codec.id);
-        if (!next.size) {
+        if (![...boxes.values()].some(input => input.checked)) {
           box.checked = true;
           hint.textContent = '至少要保留一种编码，否则视频无法播放。';
           hint.style.color = '#ffb4a8';
@@ -178,9 +174,9 @@
         }
         hint.textContent = HINT_TEXT;
         hint.style.color = '#9aa0a8';
-        writeAllowed(ALL_IDS.filter(id => next.has(id)));
       });
 
+      boxes.set(codec.id, box);
       row.append(box, name);
       list.append(row);
     }
@@ -188,31 +184,32 @@
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:14px';
 
-    const reset = document.createElement('button');
-    reset.type = 'button';
-    reset.textContent = '全部放行';
-    reset.style.cssText = 'padding:6px 12px;border-radius:7px;border:1px solid #3a3e44;background:#212428;color:#e6e8ea;font:12px system-ui;cursor:pointer';
-    reset.addEventListener('click', () => {
-      writeAllowed(ALL_IDS.slice());
-      closePanel();
+    const selectAll = document.createElement('button');
+    selectAll.type = 'button';
+    selectAll.textContent = '全选';
+    selectAll.style.cssText = 'padding:6px 12px;border-radius:7px;border:1px solid #3a3e44;background:#212428;color:#e6e8ea;font:12px system-ui;cursor:pointer';
+    selectAll.addEventListener('click', () => {
+      for (const box of boxes.values()) box.checked = true;
+      hint.textContent = HINT_TEXT;
+      hint.style.color = '#9aa0a8';
     });
 
-    const onlyAvc = document.createElement('button');
-    onlyAvc.type = 'button';
-    onlyAvc.textContent = '仅 AVC';
-    onlyAvc.style.cssText = reset.style.cssText;
-    onlyAvc.addEventListener('click', () => {
-      writeAllowed(['avc']);
-      closePanel();
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.textContent = '确认并刷新网页';
+    confirm.style.cssText = 'padding:6px 12px;border-radius:7px;border:0;background:#19c37d;color:#0b1310;font:600 12px system-ui;cursor:pointer';
+    confirm.addEventListener('click', () => {
+      try {
+        writeAllowed(ALL_IDS.filter(id => boxes.get(id).checked));
+      } catch (e) {
+        hint.textContent = '设置保存失败，请重试。';
+        hint.style.color = '#ffb4a8';
+        return;
+      }
+      window.location.reload();
     });
 
-    const done = document.createElement('button');
-    done.type = 'button';
-    done.textContent = '关闭';
-    done.style.cssText = 'padding:6px 12px;border-radius:7px;border:0;background:#19c37d;color:#0b1310;font:600 12px system-ui;cursor:pointer';
-    done.addEventListener('click', closePanel);
-
-    actions.append(reset, onlyAvc, done);
+    actions.append(selectAll, confirm);
 
     panel.append(title, hint, list, actions);
     document.documentElement.append(backdrop, panel);
