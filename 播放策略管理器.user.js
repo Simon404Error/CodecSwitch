@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         播放策略管理器 (Codec Switch)
 // @namespace    https://github.com/Simon404Error/CodecSwitch
-// @version      2.0.1
+// @version      2.0.2
 // @description  拦截 canPlayType / MediaSource.isTypeSupported / mediaCapabilities，按开关勾选放行视频编码，未勾选的编码对网站隐藏（便于稳定触发 RTX VSR）
 // @author       Simon404Error
 // @match        *://*/*
@@ -29,27 +29,29 @@
   const STORE_KEY = 'fcCodecAllowed';
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
-  // 默认全部放行 = 脚本不改变任何行为，由用户自己勾选要禁用的编码。
-  function readAllowed() {
+  function readSettings() {
     let raw = null;
     try {
       raw = hasGM ? GM_getValue(STORE_KEY, null) : localStorage.getItem(STORE_KEY);
       if (typeof raw === 'string') raw = JSON.parse(raw);
     } catch (e) { raw = null; }
-    if (!Array.isArray(raw)) return ALL_IDS.slice();
-    // 只保留脚本认识的 id，旧版本残留值不会误伤新编码
-    return ALL_IDS.filter(id => raw.includes(id));
+    // 旧版本只保存编码数组。
+    const savedAllowed = Array.isArray(raw) ? raw : raw?.allowed;
+    const known = Array.isArray(savedAllowed) ? ALL_IDS.filter(id => savedAllowed.includes(id)) : ALL_IDS.slice();
+    return {
+      allowed: known.length ? known : ['avc'],
+      shortcutEnabled: raw?.shortcutEnabled !== false,
+    };
   }
 
-  let allowed = readAllowed();
+  const settings = readSettings();
 
-  function writeAllowed(list) {
-    // 全禁会导致站点无流可选、视频无法播放，强制至少保留一种
+  function writeSettings(list, shortcutEnabled) {
+    // 至少保留一种编码，避免网站无流可选。
     const safe = ALL_IDS.filter(id => list.includes(id));
-    const value = safe.length ? safe : ['avc'];
-    if (hasGM) GM_setValue(STORE_KEY, JSON.stringify(value));
-    else localStorage.setItem(STORE_KEY, JSON.stringify(value));
-    allowed = value;
+    const saved = JSON.stringify({ allowed: safe.length ? safe : ['avc'], shortcutEnabled });
+    if (hasGM) GM_setValue(STORE_KEY, saved);
+    else localStorage.setItem(STORE_KEY, saved);
   }
 
   // 判断某个 MIME 类型是否应当被拒绝。
@@ -59,7 +61,7 @@
     if (typeof type !== 'string' || !type) return false;
     const t = type.toLowerCase();
     for (const codec of CODECS) {
-      if (allowed.indexOf(codec.id) !== -1) continue;      // 已勾选，放行
+      if (settings.allowed.indexOf(codec.id) !== -1) continue;      // 已勾选，放行
       if (codec.probe.some(tag => t.indexOf(tag) !== -1)) return true;
     }
     return false;
@@ -159,7 +161,7 @@
 
       const box = document.createElement('input');
       box.type = 'checkbox';
-      box.checked = allowed.indexOf(codec.id) !== -1;
+      box.checked = settings.allowed.indexOf(codec.id) !== -1;
       box.style.cssText = 'width:15px;height:15px;accent-color:#19c37d;cursor:pointer;flex:none';
 
       const name = document.createElement('span');
@@ -181,6 +183,16 @@
       list.append(row);
     }
 
+    const shortcutRow = document.createElement('label');
+    shortcutRow.style.cssText = 'display:flex;align-items:center;gap:9px;margin-top:8px;padding:10px 6px 0;border-top:1px solid #3a3e44;cursor:pointer';
+    const shortcutBox = document.createElement('input');
+    shortcutBox.type = 'checkbox';
+    shortcutBox.checked = settings.shortcutEnabled;
+    shortcutBox.style.cssText = 'width:15px;height:15px;accent-color:#19c37d;cursor:pointer;flex:none';
+    const shortcutLabel = document.createElement('span');
+    shortcutLabel.textContent = '按 Alt + Shift + C 打开设置面板';
+    shortcutRow.append(shortcutBox, shortcutLabel);
+
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:14px';
 
@@ -200,7 +212,7 @@
     confirm.style.cssText = 'padding:6px 12px;border-radius:7px;border:0;background:#19c37d;color:#0b1310;font:600 12px system-ui;cursor:pointer';
     confirm.addEventListener('click', () => {
       try {
-        writeAllowed(ALL_IDS.filter(id => boxes.get(id).checked));
+        writeSettings(ALL_IDS.filter(id => boxes.get(id).checked), shortcutBox.checked);
       } catch (e) {
         hint.textContent = '设置保存失败，请重试。';
         hint.style.color = '#ffb4a8';
@@ -211,25 +223,28 @@
 
     actions.append(selectAll, confirm);
 
-    panel.append(title, hint, list, actions);
+    panel.append(title, hint, list, shortcutRow, actions);
     document.documentElement.append(backdrop, panel);
     panelNodes = [backdrop, panel];
   }
 
-  // 打开方式：油猴菜单，或 Alt+Shift+C
+  // 油猴菜单始终可用。
   try {
     if (typeof GM_registerMenuCommand === 'function') {
       GM_registerMenuCommand('播放策略管理器', openPanel);
     }
   } catch (e) {}
 
-  document.addEventListener('keydown', event => {
-    if (event.altKey && event.shiftKey && String(event.key).toLowerCase() === 'c') {
-      event.preventDefault();
-      event.stopPropagation();
-      openPanel();
-    }
-  }, true);
+  if (settings.shortcutEnabled) {
+    document.addEventListener('keydown', event => {
+      if (event.altKey && event.shiftKey && String(event.key).toLowerCase() === 'c') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!panelNodes) openPanel();
+      }
+    }, true);
+  }
 
-  console.log('[codec-switch] 已放行：' + allowed.join(', ') + '（Alt+Shift+C 打开设置）');
+  console.log('[codec-switch] 已放行：' + settings.allowed.join(', ') +
+    (settings.shortcutEnabled ? '（Alt+Shift+C 打开设置）' : '（通过油猴菜单打开设置）'));
 })();
